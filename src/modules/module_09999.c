@@ -9,6 +9,22 @@
 #include "bitops.h"
 #include "convert.h"
 #include "shared.h"
+#include "emu_inc_ecc_secp256k1.h"
+
+// SECP256K1 -----------------------------------------
+#define SECP256K1_G_STRING0 0x66be7902
+#define SECP256K1_G_STRING1 0xbbdcf97e
+#define SECP256K1_G_STRING2 0x62a055ac
+#define SECP256K1_G_STRING3 0x0b87ce95
+#define SECP256K1_G_STRING4 0xfc9b0207
+#define SECP256K1_G_STRING5 0x28ce2ddb
+#define SECP256K1_G_STRING6 0x81f259d9
+#define SECP256K1_G_STRING7 0x17f8165b
+#define SECP256K1_G_STRING8 0x00000098
+
+// 8+1 to make room for the parity
+#define PUBLIC_KEY_LENGTH_WITH_PARITY 9
+// ---------------------------------------------------
 
 static const u32   ATTACK_EXEC    = ATTACK_EXEC_INSIDE_KERNEL;
 static const u32   DGST_POS0      = 3;
@@ -17,18 +33,17 @@ static const u32   DGST_POS2      = 2;
 static const u32   DGST_POS3      = 6;
 static const u32   DGST_SIZE      = DGST_SIZE_4_8;
 static const u32   HASH_CATEGORY  = HASH_CATEGORY_RAW_HASH;
-static const char *HASH_NAME      = "SHA2-256";
+static const char *HASH_NAME      = "SHA2-256 + SECP256k1 test";
 static const u64   KERN_TYPE      = 9999;
 static const u32   OPTI_TYPE      = OPTI_TYPE_ZERO_BYTE
-                                  | OPTI_TYPE_PRECOMPUTE_INIT
-                                  | OPTI_TYPE_EARLY_SKIP
-                                  | OPTI_TYPE_NOT_ITERATED
-                                  | OPTI_TYPE_NOT_SALTED
-                                  | OPTI_TYPE_RAW_HASH;
+                                   | OPTI_TYPE_PRECOMPUTE_INIT
+                                   | OPTI_TYPE_EARLY_SKIP
+                                   | OPTI_TYPE_NOT_ITERATED
+                                   | OPTI_TYPE_RAW_HASH;                                  
 static const u64   OPTS_TYPE      = OPTS_TYPE_PT_GENERATE_BE
                                   | OPTS_TYPE_PT_ADD80
                                   | OPTS_TYPE_PT_ADDBITS15;
-static const u32   SALT_TYPE      = SALT_TYPE_NONE;
+static const u32   SALT_TYPE      = SALT_TYPE_EMBEDDED;
 static const char *ST_PASS        = "hashcat";
 static const char *ST_HASH        = "127e6fbfe24a750e72930c220a8e138275656b8e5d8f48a98c3c92df2caba935";
 
@@ -47,8 +62,44 @@ u32         module_salt_type      (MAYBE_UNUSED const hashconfig_t *hashconfig, 
 const char *module_st_hash        (MAYBE_UNUSED const hashconfig_t *hashconfig, MAYBE_UNUSED const user_options_t *user_options, MAYBE_UNUSED const user_options_extra_t *user_options_extra) { return ST_HASH;         }
 const char *module_st_pass        (MAYBE_UNUSED const hashconfig_t *hashconfig, MAYBE_UNUSED const user_options_t *user_options, MAYBE_UNUSED const user_options_extra_t *user_options_extra) { return ST_PASS;         }
 
+typedef struct secp256k1_salt
+{
+  secp256k1_t coords;
+} secp256k1_salt_t;
+
+u64 module_esalt_size (MAYBE_UNUSED const hashconfig_t *hashconfig, MAYBE_UNUSED const user_options_t *user_options, MAYBE_UNUSED const user_options_extra_t *user_options_extra)
+{
+  const u64 esalt_size = (const u64) sizeof (secp256k1_salt_t);
+
+  return esalt_size;
+}
+
 int module_hash_decode (MAYBE_UNUSED const hashconfig_t *hashconfig, MAYBE_UNUSED void *digest_buf, MAYBE_UNUSED salt_t *salt, MAYBE_UNUSED void *esalt_buf, MAYBE_UNUSED void *hook_salt_buf, MAYBE_UNUSED hashinfo_t *hash_info, const char *line_buf, MAYBE_UNUSED const int line_len)
 {
+  // salt
+  secp256k1_salt_t *esalt = (secp256k1_salt_t *) esalt_buf;
+  secp256k1_t *coords = &esalt->coords;
+
+  u32 g_local[PUBLIC_KEY_LENGTH_WITH_PARITY]; 
+
+  g_local[0] = SECP256K1_G_STRING0;
+  g_local[1] = SECP256K1_G_STRING1;
+  g_local[2] = SECP256K1_G_STRING2;
+  g_local[3] = SECP256K1_G_STRING3;
+  g_local[4] = SECP256K1_G_STRING4;
+  g_local[5] = SECP256K1_G_STRING5;
+  g_local[6] = SECP256K1_G_STRING6;
+  g_local[7] = SECP256K1_G_STRING7;
+  g_local[8] = SECP256K1_G_STRING8;
+
+  // precompute G point
+  u32 parse_success = parse_public (coords, g_local);
+  if (parse_success != 0) return (PARSER_SALT_VALUE);
+
+  salt->salt_buf[0] = 1;
+  salt->salt_len = 4;
+  //
+
   u32 *digest = (u32 *) digest_buf;
 
   token_t token;
@@ -172,7 +223,7 @@ void module_init (module_ctx_t *module_ctx)
   module_ctx->module_dgst_pos3                = module_dgst_pos3;
   module_ctx->module_dgst_size                = module_dgst_size;
   module_ctx->module_dictstat_disable         = MODULE_DEFAULT;
-  module_ctx->module_esalt_size               = MODULE_DEFAULT;
+  module_ctx->module_esalt_size               = module_esalt_size;
   module_ctx->module_extra_buffer_size        = MODULE_DEFAULT;
   module_ctx->module_extra_tmp_size           = MODULE_DEFAULT;
   module_ctx->module_forced_outfile_format    = MODULE_DEFAULT;
